@@ -19,6 +19,9 @@ class Roomba:
                                     parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE)
     self.connection.write(struct.pack('>B', 128))
 
+  def __del__(self):
+    self.connection.write(struct.pack('>B', 173))
+
   # set the mode of the roomba
   def setMode(self, _mode: RoombaMode):
     if self.mode == _mode or _mode == RoombaMode.PASSIVE:
