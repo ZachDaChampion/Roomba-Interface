@@ -1,6 +1,8 @@
 import serial
 import struct
 import time
+import threading
+import sys
 from typing import List
 from enum import Enum
 
@@ -14,10 +16,24 @@ class RoombaMode(Enum):
 class Roomba:
 
   connection = None
+  mode = RoombaMode.PASSIVE
+  encoderData = []
+  sensorData = {
+      'updated': 0,
+      'battery-charge': 0,
+      'enc-right': 0,
+      'enc-right-raw': 0,
+      'enc-right-offset': 0,
+      'enc-left': 0,
+      'enc-left-raw': 0,
+      'enc-left-offset': 0
+  }
+  _sensorThread = None
+  _sensorThreadExit = False
 
   def __init__(self, _port: str):
     self.mode = RoombaMode.PASSIVE
-    self.connection = serial.Serial(_port, 115200)
+    self.connection = serial.Serial(_port, 115200, write_timeout=0)
     if (self.connection.is_open):
       self.connection.close()
     self.connection.open()
@@ -27,11 +43,27 @@ class Roomba:
     time.sleep(.5)
     print('Started Roomba OI')
 
-  def __del__(self):
-    # if self.connection:
-    self.connection.write(struct.pack('>B', 173))
-    self.connection.close()
+  def close(self):
+    if self.connection is not None:
+      if self._sensorThread is not None:
+        self._sensorThreadExit = True
+        self._sensorThread.join()
+      self.connection.write(struct.pack('>B', 173))
+      time.sleep(1)
+      self.connection.close()
     print('Serial connection terminated')
+
+  # reset the roomba as if the battery was removed
+  def reset(self):
+    if self.connection is None:
+      print('connection to Roomba was not initialized')
+      return
+    self.connection.write(struct.pack('>B', 7))
+    print('Reset Roomba')
+    time.sleep(10)
+    self.connection.write(struct.pack('>B', 128))
+    time.sleep(.5)
+    print('Restarted Roomba OI')
 
   # set the mode of the roomba
   def setMode(self, _mode: RoombaMode):
@@ -117,9 +149,58 @@ class Roomba:
     self.connection.write(struct.pack(
         '>BBBBB', 164, _ascii_digits[_msg[0]], _ascii_digits[_msg[1]], _ascii_digits[_msg[2]], _ascii_digits[_msg[3]]))
 
+  # update all of the appropriate sensor data
+  def updateSensors(self):
+    if self.connection is None:
+      print('connection to Roomba was not initialized')
+    updatedAt = int(time.time() * 1000)
+    if (updatedAt - self.sensorData['updated'] < 15):
+      print('Sensor data not yet updated by Roomba')
+      return
+    self.connection.write(struct.pack(
+        '>BBBBBB', 149, 4, 25, 26, 43, 44))
+    raw_data = struct.unpack('HHhh', self.connection.read(8))
+    self.sensorData['updated'] = updatedAt
+    self.sensorData['battery-charge'] = raw_data[0] / raw_data[1]
+    if self.sensorData['enc-right-raw'] > 30000 and raw_data[2] < -30000:
+      self.sensorData['enc-right-offset'] += 65535
+      print('Overflow')
+    elif self.sensorData['enc-right-raw'] < -30000 and raw_data[2] > 30000:
+      self.sensorData['enc-right-offset'] -= 65535
+      print('Overflow')
+    self.sensorData['enc-right-raw'] = raw_data[2]
+    self.sensorData['enc-right'] = self.sensorData['enc-right-raw'] + \
+        self.sensorData['enc-right-offset']
+    if self.sensorData['enc-left-raw'] > 30000 and raw_data[3] < -30000:
+      self.sensorData['enc-left-offset'] += 65535
+      print('Overflow')
+    elif self.sensorData['enc-left-raw'] < -30000 and raw_data[3] > 30000:
+      self.sensorData['enc-left-offset'] -= 65535
+      print('Overflow')
+    self.sensorData['enc-left-raw'] = raw_data[3]
+    self.sensorData['enc-left'] = self.sensorData['enc-left-raw'] + \
+        self.sensorData['enc-left-offset']
+
+    self.encoderData.append(
+        (self.sensorData['enc-left'], self.sensorData['enc-right']))
+
+  # begin sensor update loop in separate thread
+  def beginSensorLoop(self):
+    self._sensorThreadExit = False
+    self._sensorThread = threading.Thread(target=self.sensorLoop, daemon=True)
+    self._sensorThread.start()
+    time.sleep(.03)
+
+  # update sensors periodically
+  def sensorLoop(self, rate: int = 15):
+    while (not self._sensorThreadExit):
+      self.updateSensors()
+      time.sleep(.03)
+    print('Thread exited')
+
 
 # generate a byte from a list of booleans
-def generateByte(bits: List[bool], size=8):
+def generateByte(bits: List[bool], size: int = 8):
   p = bits[-size:]
   return sum(v << i for i, v in enumerate(p[::-1]))
 
