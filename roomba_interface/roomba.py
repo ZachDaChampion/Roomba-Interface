@@ -144,7 +144,7 @@ class Roomba:
 
   # set the LEDs on the roomba
   # power color ranges from 0 to 127, where 0 is green and 127 is red
-  # power intensity ranges from 0 to 255, where 0 is off and 127 is max
+  # power intensity ranges from 0 to 127, where 0 is off and 127 is max
   def setLEDs(self, check_led: bool, debris_led: bool, spot_led: bool, power_color: int, power_intensity: int):
     if self.connection is None:
       print('connection to Roomba was not initialized')
