@@ -24,20 +24,20 @@ class SensorData:
   vel_right = 0
   history = []
 
-  def __init__(self, _update_time, _battery_charge, _enc_left, _enc_right, _vel_left, _vel_right):
-    self.newData(_update_time, _battery_charge, _enc_left,
-                 _enc_right, _vel_left, _vel_right)
+  def __init__(self, update_time, battery_charge, enc_left, enc_right, vel_left, vel_right):
+    self.newData(update_time, battery_charge, enc_left,
+                 enc_right, vel_left, vel_right)
 
-  def newData(self, _update_time, _battery_charge, _enc_left, _enc_right, _vel_left, _vel_right):
-    if (_update_time != -1):
+  def newData(self, update_time, battery_charge, enc_left, enc_right, vel_left, vel_right):
+    if (update_time != -1):
       self.history.append({'time': self.update_time, 'enc-left': self.enc_left, 'enc-right': self.enc_right,
                            'vel-left':  self.vel_left, 'vel-right': self.vel_right})
-    self.update_time = _update_time
-    self.battery_charge = _battery_charge
-    self.enc_left = _enc_left
-    self.enc_right = _enc_right
-    self.vel_left = _vel_left
-    self.vel_right = _vel_right
+    self.update_time = update_time
+    self.battery_charge = battery_charge
+    self.enc_left = enc_left
+    self.enc_right = enc_right
+    self.vel_left = vel_left
+    self.vel_right = vel_right
 
 
 class Roomba:
@@ -55,9 +55,9 @@ class Roomba:
   _prevPrevVelLeft = 0
   _prevPrevVelRight = 0
 
-  def __init__(self, _port: str, _vel_filter_strength: float = .5):
-    self.connection = serial.Serial(_port, 115200, write_timeout=0)
-    self._vel_filter_str = _vel_filter_strength
+  def __init__(self, port: str, vel_filter_strength: float = .5):
+    self.connection = serial.Serial(port, 115200, write_timeout=0)
+    self._vel_filter_str = vel_filter_strength
     if (self.connection.is_open):
       self.connection.close()
     self.connection.open()
@@ -97,18 +97,21 @@ class Roomba:
     print('Restarted Roomba OI')
 
   # set the mode of the roomba
-  def setMode(self, _mode: RoombaMode):
+  def setMode(self, mode: RoombaMode):
     if self.connection is None:
       print('connection to Roomba was not initialized')
       return
-    if self.mode == _mode or _mode == RoombaMode.PASSIVE:
+    if self.mode == mode or mode == RoombaMode.PASSIVE:
       print("Roomba mode was not changed")
       return
-    if _mode == RoombaMode.SAFE:
+    if mode == RoombaMode.OFF:
+      self.connection.write(struct.pack('>B', 173))
+      time.sleep(.02)
+    elif mode == RoombaMode.SAFE:
       self.connection.write(struct.pack('>B', 131))
       time.sleep(.02)
       self.mode = RoombaMode.SAFE
-    elif _mode == RoombaMode.FULL:
+    elif mode == RoombaMode.FULL:
       self.connection.write(struct.pack('>B', 132))
       time.sleep(.02)
       self.mode = RoombaMode.FULL
@@ -118,31 +121,31 @@ class Roomba:
   # each wheel is controlled independently
   # velocity range is -500 to 500 mm/sec
   # integrated controller works in steps of 28.5 mm/sec
-  def driveVel(self, _right: int, _left: int):
+  def driveVel(self, right: int, left: int):
     if self.connection is None:
       print('connection to Roomba was not initialized')
       return
     if self.mode == RoombaMode.PASSIVE:
       print('instruction cannot be carried out because Roobma is in PASSIVE mode')
       return
-    self.connection.write(struct.pack('>Bhh', 145, _right, _left))
+    self.connection.write(struct.pack('>Bhh', 145, right, left))
 
   # drive the roomba using PWM
   # each wheel is controlled independently
   # PWM range is -255 to 255
-  def drivePWM(self, _right: int, _left: int):
+  def drivePWM(self, right: int, left: int):
     if self.connection is None:
       print('connection to Roomba was not initialized')
       return
     if self.mode == RoombaMode.PASSIVE:
       print('instruction cannot be carried out because Roobma is in PASSIVE mode')
       return
-    self.connection.write(struct.pack('>Bhh', 146, _right, _left))
+    self.connection.write(struct.pack('>Bhh', 146, right, left))
 
   # set the LEDs on the roomba
   # power color ranges from 0 to 127, where 0 is green and 127 is red
   # power intensity ranges from 0 to 255, where 0 is off and 127 is max
-  def setLEDs(self, _check_led: bool, _debris_led: bool, _spot_led: bool, _power_color: int, _power_intensity: int):
+  def setLEDs(self, check_led: bool, debris_led: bool, spot_led: bool, power_color: int, power_intensity: int):
     if self.connection is None:
       print('connection to Roomba was not initialized')
       return
@@ -150,35 +153,35 @@ class Roomba:
       print('instruction cannot be carried out because Roobma is in PASSIVE mode')
       return
     self.connection.write(struct.pack(
-        '>BBBB', 139, generateByte([_check_led, 0, _spot_led, _debris_led]), _power_color, _power_intensity))
+        '>BBBB', 139, generateByte([check_led, 0, spot_led, debris_led]), power_color, power_intensity))
 
   # set the raw segments of the 7-segment display
   # digits on roomba are 3, 2, 1, 0 from left to right
   # see spec for segment labels because i dont feel like typing it all out here
-  def setDigitsRaw(self, _3: int, _2: int, _1: int, _0: int):
+  def setDigitsRaw(self, d3: int, d2: int, d1: int, d0: int):
     if self.connection is None:
       print('connection to Roomba was not initialized')
       return
     if self.mode == RoombaMode.PASSIVE:
       print('instruction cannot be carried out because Roobma is in PASSIVE mode')
       return
-    self.connection.write(struct.pack('>BBBBB', 163, _3, _2, _1, _0))
+    self.connection.write(struct.pack('>BBBBB', 163, d3, d2, d1, d0))
 
   # set the segments of the 7-segment display to an ascii character
   # message must be exactly four characters
   # see spec for supported characters because i dont feel like typing it all out here
-  def setDigitsASCII(self, _msg: str):
+  def setDigitsASCII(self, msg: str):
     if self.connection is None:
       print('connection to Roomba was not initialized')
       return
     if self.mode == RoombaMode.PASSIVE:
       print('instruction cannot be carried out because Roobma is in PASSIVE mode')
       return
-    if len(_msg) != 4 or _msg[0] not in cmd.ASCII_DIGITS.keys() or _msg[1] not in cmd.ASCII_DIGITS.keys() or _msg[2] not in cmd.ASCII_DIGITS.keys() or _msg[3] not in cmd.ASCII_DIGITS.keys():
+    if len(msg) != 4 or msg[0] not in cmd.ASCII_DIGITS.keys() or msg[1] not in cmd.ASCII_DIGITS.keys() or msg[2] not in cmd.ASCII_DIGITS.keys() or msg[3] not in cmd.ASCII_DIGITS.keys():
       print('one or more of your digits cannot be displayed')
       return
     self.connection.write(struct.pack(
-        '>BBBBB', 164, cmd.ASCII_DIGITS[_msg[0]], cmd.ASCII_DIGITS[_msg[1]], cmd.ASCII_DIGITS[_msg[2]], cmd.ASCII_DIGITS[_msg[3]]))
+        '>BBBBB', 164, cmd.ASCII_DIGITS[msg[0]], cmd.ASCII_DIGITS[msg[1]], cmd.ASCII_DIGITS[msg[2]], cmd.ASCII_DIGITS[msg[3]]))
 
   # begin sensor update loop in separate thread
   def beginUpdateLoop(self):

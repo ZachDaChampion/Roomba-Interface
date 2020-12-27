@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from roomba_interface import Roomba, RoombaMode
 
-roomba = Roomba('COM4', _vel_filter_strength=.1)
+roomba = Roomba('COM4', vel_filter_strength=.1)
 roomba.setMode(RoombaMode.SAFE)
 roomba.beginUpdateLoop()
 roomba.setDigitsASCII('help')
