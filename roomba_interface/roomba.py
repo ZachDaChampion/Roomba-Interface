@@ -3,37 +3,61 @@ import struct
 import time
 import threading
 import sys
-from typing import List
 from enum import Enum
+from typing import List
+from . import command_data as cmd
 
 
 class RoombaMode(Enum):
-  PASSIVE = 0
-  SAFE = 1
-  FULL = 2
+  OFF = 0
+  PASSIVE = 1
+  SAFE = 2
+  FULL = 3
+
+
+class SensorData:
+  update_time = -1
+  battery_charge = 0
+  enc_left = 0
+  enc_right = 0
+  vel_left = 0
+  vel_right = 0
+  history = []
+
+  def __init__(self, _update_time, _battery_charge, _enc_left, _enc_right, _vel_left, _vel_right):
+    self.newData(_update_time, _battery_charge, _enc_left,
+                 _enc_right, _vel_left, _vel_right)
+
+  def newData(self, _update_time, _battery_charge, _enc_left, _enc_right, _vel_left, _vel_right):
+    if (_update_time != -1):
+      self.history.append({'time': self.update_time, 'enc-left': self.enc_left, 'enc-right': self.enc_right,
+                           'vel-left':  self.vel_left, 'vel-right': self.vel_right})
+    self.update_time = _update_time
+    self.battery_charge = _battery_charge
+    self.enc_left = _enc_left
+    self.enc_right = _enc_right
+    self.vel_left = _vel_left
+    self.vel_right = _vel_right
 
 
 class Roomba:
-
   connection = None
-  mode = RoombaMode.PASSIVE
-  encoderData = []
-  sensorData = {
-      'updated': 0,
-      'battery-charge': 0,
-      'enc-right': 0,
-      'enc-right-raw': 0,
-      'enc-right-offset': 0,
-      'enc-left': 0,
-      'enc-left-raw': 0,
-      'enc-left-offset': 0
-  }
-  _sensorThread = None
-  _sensorThreadExit = False
+  mode = RoombaMode.OFF
+  sensorData = SensorData(0, 0, 0, 0, 0, 0)
+  _vel_filter_str = .5
+  _afterSensorsUpdate = []
+  _updateThread = None
+  _updateThreadExit = False
+  _prevEncLeft = 0
+  _prevEncRight = 0
+  _prevVelLeft = 0
+  _prevVelRight = 0
+  _prevPrevVelLeft = 0
+  _prevPrevVelRight = 0
 
-  def __init__(self, _port: str):
-    self.mode = RoombaMode.PASSIVE
+  def __init__(self, _port: str, _vel_filter_strength: float = .5):
     self.connection = serial.Serial(_port, 115200, write_timeout=0)
+    self._vel_filter_str = _vel_filter_strength
     if (self.connection.is_open):
       self.connection.close()
     self.connection.open()
@@ -41,13 +65,18 @@ class Roomba:
     print('Connected to serial port')
     self.connection.write(struct.pack('>B', 128))
     time.sleep(.5)
+    self.mode = RoombaMode.PASSIVE
     print('Started Roomba OI')
 
+  def __del__(self):
+    self.close()
+
   def close(self):
-    if self.connection is not None:
-      if self._sensorThread is not None:
-        self._sensorThreadExit = True
-        self._sensorThread.join()
+    if self.connection is not None and self.connection.is_open:
+      if self._updateThread is not None:
+        self._updateThreadExit = True
+        self._updateThread.join()
+      self.connection.write(struct.pack('>BB', 150, 0))
       self.connection.write(struct.pack('>B', 173))
       time.sleep(1)
       self.connection.close()
@@ -59,10 +88,12 @@ class Roomba:
       print('connection to Roomba was not initialized')
       return
     self.connection.write(struct.pack('>B', 7))
+    self.mode = RoombaMode.OFF
     print('Reset Roomba')
     time.sleep(10)
     self.connection.write(struct.pack('>B', 128))
     time.sleep(.5)
+    self.mode = RoombaMode.PASSIVE
     print('Restarted Roomba OI')
 
   # set the mode of the roomba
@@ -143,59 +174,89 @@ class Roomba:
     if self.mode == RoombaMode.PASSIVE:
       print('instruction cannot be carried out because Roobma is in PASSIVE mode')
       return
-    if len(_msg) != 4 or _msg[0] not in _ascii_digits.keys() or _msg[1] not in _ascii_digits.keys() or _msg[2] not in _ascii_digits.keys() or _msg[3] not in _ascii_digits.keys():
+    if len(_msg) != 4 or _msg[0] not in cmd.ASCII_DIGITS.keys() or _msg[1] not in cmd.ASCII_DIGITS.keys() or _msg[2] not in cmd.ASCII_DIGITS.keys() or _msg[3] not in cmd.ASCII_DIGITS.keys():
       print('one or more of your digits cannot be displayed')
       return
     self.connection.write(struct.pack(
-        '>BBBBB', 164, _ascii_digits[_msg[0]], _ascii_digits[_msg[1]], _ascii_digits[_msg[2]], _ascii_digits[_msg[3]]))
-
-  # update all of the appropriate sensor data
-  def updateSensors(self):
-    if self.connection is None:
-      print('connection to Roomba was not initialized')
-    updatedAt = int(time.time() * 1000)
-    if (updatedAt - self.sensorData['updated'] < 15):
-      print('Sensor data not yet updated by Roomba')
-      return
-    self.connection.write(struct.pack(
-        '>BBBBBB', 149, 4, 25, 26, 43, 44))
-    raw_data = struct.unpack('HHhh', self.connection.read(8))
-    self.sensorData['updated'] = updatedAt
-    self.sensorData['battery-charge'] = raw_data[0] / raw_data[1]
-    if self.sensorData['enc-right-raw'] > 30000 and raw_data[2] < -30000:
-      self.sensorData['enc-right-offset'] += 65535
-      print('Overflow')
-    elif self.sensorData['enc-right-raw'] < -30000 and raw_data[2] > 30000:
-      self.sensorData['enc-right-offset'] -= 65535
-      print('Overflow')
-    self.sensorData['enc-right-raw'] = raw_data[2]
-    self.sensorData['enc-right'] = self.sensorData['enc-right-raw'] + \
-        self.sensorData['enc-right-offset']
-    if self.sensorData['enc-left-raw'] > 30000 and raw_data[3] < -30000:
-      self.sensorData['enc-left-offset'] += 65535
-      print('Overflow')
-    elif self.sensorData['enc-left-raw'] < -30000 and raw_data[3] > 30000:
-      self.sensorData['enc-left-offset'] -= 65535
-      print('Overflow')
-    self.sensorData['enc-left-raw'] = raw_data[3]
-    self.sensorData['enc-left'] = self.sensorData['enc-left-raw'] + \
-        self.sensorData['enc-left-offset']
-
-    self.encoderData.append(
-        (self.sensorData['enc-left'], self.sensorData['enc-right']))
+        '>BBBBB', 164, cmd.ASCII_DIGITS[_msg[0]], cmd.ASCII_DIGITS[_msg[1]], cmd.ASCII_DIGITS[_msg[2]], cmd.ASCII_DIGITS[_msg[3]]))
 
   # begin sensor update loop in separate thread
-  def beginSensorLoop(self):
-    self._sensorThreadExit = False
-    self._sensorThread = threading.Thread(target=self.sensorLoop, daemon=True)
-    self._sensorThread.start()
-    time.sleep(.03)
+  def beginUpdateLoop(self):
+    self._updateThreadExit = False
+    self._updateThread = threading.Thread(target=self.updateLoop)
+    self.connection.write(struct.pack('>BBBBBB', 148, 4, 25, 26, 43, 44))
+    self._updateThread.start()
+    time.sleep(.015)
 
-  # update sensors periodically
-  def sensorLoop(self, rate: int = 15):
-    while (not self._sensorThreadExit):
-      self.updateSensors()
-      time.sleep(.03)
+  # update sensors periodically and run user callbacks
+  def updateLoop(self):
+    update_data = False
+    while (True):
+
+        # wait for data to start
+      if self._updateThreadExit or self.connection is None:
+        break
+      self.connection.read_until(struct.pack('>B', 19))
+
+      # store time data
+      update_time = time.time() / 1000
+      time_diff = update_time - self.sensorData.update_time
+
+      # get sensor data
+      if self._updateThreadExit or self.connection is None:
+        break
+      raw_sensor_data = struct.unpack(
+          '>BBhBhBhBhB', self.connection.read(14))
+
+      # calculate new encoder positions
+      diff_enc_left = raw_sensor_data[6] - self._prevEncLeft
+      diff_enc_right = raw_sensor_data[8] - self._prevEncRight
+      if diff_enc_left < -32768:
+        diff_enc_left += 65536
+      elif diff_enc_left > 32768:
+        diff_enc_left -= 65536
+      if diff_enc_right < -32768:
+        diff_enc_right += 65536
+      elif diff_enc_right > 32768:
+        diff_enc_right -= 65536
+      abs_enc_left = self.sensorData.enc_left + diff_enc_left
+      abs_enc_right = self.sensorData.enc_right + diff_enc_right
+      self._prevEncLeft = raw_sensor_data[6]
+      self._prevEncRight = raw_sensor_data[8]
+
+      # calculate velocities
+      raw_vel_left = self.sensorData.vel_left
+      raw_vel_right = self.sensorData.vel_right
+      filtered_vel_left = raw_vel_left
+      filtered_vel_right = raw_vel_right
+      if time_diff != 0:
+        raw_vel_left = diff_enc_left / time_diff / 1e3
+        raw_vel_right = diff_enc_right / time_diff / 1e3
+
+        filtered_vel_left = getMedian(
+            raw_vel_left, self._prevVelLeft, self._prevPrevVelLeft)
+        filtered_vel_right = getMedian(
+            raw_vel_right, self._prevVelRight, self._prevPrevVelRight)
+
+        filtered_vel_left = self.sensorData.vel_left * \
+            self._vel_filter_str + filtered_vel_left * \
+            (1 - self._vel_filter_str)
+        filtered_vel_right = self.sensorData.vel_right * \
+            self._vel_filter_str + filtered_vel_right * \
+            (1 - self._vel_filter_str)
+
+        self._prevPrevVelLeft = self._prevVelLeft
+        self._prevVelLeft = raw_vel_left
+        self._prevPrevVelRight = self._prevVelRight
+        self._prevVelRight = raw_vel_right
+
+      # update stored data
+      if update_data and raw_sensor_data[4] != 0:
+        self.sensorData.newData(
+            update_time, raw_sensor_data[2] / raw_sensor_data[4], abs_enc_left, abs_enc_right, filtered_vel_left, filtered_vel_right)
+      else:
+        update_data = True
+
     print('Thread exited')
 
 
@@ -205,65 +266,12 @@ def generateByte(bits: List[bool], size: int = 8):
   return sum(v << i for i, v in enumerate(p[::-1]))
 
 
-_ascii_digits = {
-    ' ': 32,
-    '!': 33,
-    '"': 34,
-    '#': 35,
-    '%': 37,
-    '&': 38,
-    "'": 39,
-    ',': 44,
-    '-': 45,
-    '.': 46,
-    '/': 47,
-    '0': 48,
-    '1': 49,
-    '2': 50,
-    '3': 51,
-    '4': 52,
-    '5': 53,
-    '6': 54,
-    '7': 55,
-    '8': 56,
-    '9': 57,
-    ':': 58,
-    ';': 59,
-    '=': 61,
-    '?': 63,
-    'a': 65,
-    'b': 66,
-    'c': 67,
-    'd': 68,
-    'e': 69,
-    'f': 70,
-    'g': 71,
-    'h': 72,
-    'i': 73,
-    'j': 74,
-    'k': 75,
-    'l': 76,
-    'm': 77,
-    'n': 78,
-    'o': 79,
-    'p': 80,
-    'q': 81,
-    'r': 82,
-    's': 83,
-    't': 84,
-    'u': 85,
-    'v': 86,
-    'w': 87,
-    'x': 88,
-    'y': 89,
-    'z': 90,
-    '[': 91,
-    '\\': 92,
-    ']': 93,
-    '^': 94,
-    '_': 95,
-    '`': 96,
-    '{': 123,
-    '}': 125,
-    '~': 126
-}
+def getMedian(a: int,  b: int,  c: int):
+  x = a-b
+  y = b-c
+  z = a-c
+  if x*y > 0:
+    return b
+  if x*z > 0:
+    return c
+  return a
