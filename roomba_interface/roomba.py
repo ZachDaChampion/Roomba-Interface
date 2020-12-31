@@ -5,6 +5,7 @@ import threading
 import sys
 from enum import Enum
 from typing import List
+from .odom import Odom, Pose, LengthUnits, AngleUnits
 from . import command_data as cmd
 
 
@@ -29,9 +30,6 @@ class SensorData:
                  enc_right, vel_left, vel_right)
 
   def newData(self, update_time, battery_charge, enc_left, enc_right, vel_left, vel_right):
-    if (update_time != -1):
-      self.history.append({'time': self.update_time, 'enc-left': self.enc_left, 'enc-right': self.enc_right,
-                           'vel-left':  self.vel_left, 'vel-right': self.vel_right})
     self.update_time = update_time
     self.battery_charge = battery_charge
     self.enc_left = enc_left
@@ -44,6 +42,9 @@ class Roomba:
   connection = None
   mode = RoombaMode.OFF
   sensorData = SensorData(0, 0, 0, 0, 0, 0)
+  pose = Pose(0, 0, 0)
+  history = {'time': [], 'enc-left': [], 'enc-right': [],
+             'vel-left': [], 'vel-right': [], 'x': [], 'y': [], 'angle': []}
   _vel_filter_str = .5
   _afterSensorsUpdate = []
   _updateThread = None
@@ -54,6 +55,7 @@ class Roomba:
   _prevVelRight = 0
   _prevPrevVelLeft = 0
   _prevPrevVelRight = 0
+  _odom = Odom()
 
   def __init__(self, port: str, vel_filter_strength: float = .5):
     self.connection = serial.Serial(port, 115200, write_timeout=0)
@@ -257,6 +259,17 @@ class Roomba:
       if update_data and raw_sensor_data[4] != 0:
         self.sensorData.newData(
             update_time, raw_sensor_data[2] / raw_sensor_data[4], abs_enc_left, abs_enc_right, filtered_vel_left, filtered_vel_right)
+        self.pose = self._odom.update(
+            diff_enc_left, diff_enc_right, abs_enc_left, abs_enc_right)
+        self.history['time'].append(self.sensorData.update_time)
+        self.history['enc-left'].append(self.sensorData.enc_left)
+        self.history['enc-right'].append(self.sensorData.enc_right)
+        self.history['vel-left'].append(self.sensorData.vel_left)
+        self.history['vel-right'].append(self.sensorData.vel_right)
+        self.history['x'].append(self.pose.x(LengthUnits.INCH))
+        self.history['y'].append(self.pose.y(LengthUnits.INCH))
+        self.history['angle'].append(self.pose.angle(AngleUnits.DEGREE))
+
       else:
         update_data = True
 
